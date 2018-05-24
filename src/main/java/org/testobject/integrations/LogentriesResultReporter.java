@@ -1,8 +1,8 @@
 package org.testobject.integrations;
 
-import org.junit.internal.AssumptionViolatedException;
-import org.junit.rules.TestWatcher;
+import org.junit.rules.TestRule;
 import org.junit.runner.Description;
+import org.junit.runners.model.Statement;
 
 import javax.ws.rs.client.Client;
 import javax.ws.rs.client.ClientBuilder;
@@ -12,7 +12,7 @@ import javax.ws.rs.core.Response;
 import java.util.HashMap;
 import java.util.Map;
 
-public class LogentriesResultReporter extends TestWatcher {
+public class LogentriesResultReporter implements TestRule {
 	private static final String LOGENTRIES_URL = "http://webhook.logentries.com/noformat/logs/";
 	private static final String LOGENTRIES_TOKEN_ENV_NAME = "LOGENTRIES_TOKEN";
 	private static final String TEST_IDENTIFIER_ENV_NAME = "TEST_IDENTIFIER";
@@ -31,9 +31,6 @@ public class LogentriesResultReporter extends TestWatcher {
 	private final String testIdentifier;
 	private final String jenkinsJobName;
 	private final String jenkinsBuildUrl;
-
-	// Junit doesn't say if the methods are only invoked once by a test. Therefor, I'm keeping them in a map just to be safe (uu)
-	private final Map<Description, Test> testsMap = new HashMap<>();
 
 	protected LogentriesResultReporter(Client client, String logentriesToken) {
 		if (logentriesToken == null) {
@@ -55,57 +52,32 @@ public class LogentriesResultReporter extends TestWatcher {
 	}
 
 	@Override
-	protected void starting(Description description) {
+	public Statement apply(Statement base, Description description) {
 		if (description.isEmpty()) {
-			return;
-		}
-		testsMap.put(description, new Test(description.getDisplayName(), System.currentTimeMillis()));
-	}
+			return base;
+		} else {
+			return new Statement() {
+				@Override
+				public void evaluate() throws Throwable {
+					Test test = new Test(description.getDisplayName(), System.currentTimeMillis());
 
-	@Override
-	protected void succeeded(Description description) {
-		if (description.isEmpty()) {
-			return;
+					try {
+						base.evaluate();
+						test.setState(Test.State.SUCCESS);
+					} catch (@SuppressWarnings("deprecation") org.junit.internal.AssumptionViolatedException  e) {
+						test.setState(Test.State.SKIPPED);
+						throw e;
+					} catch (Throwable e) {
+						test.setState(Test.State.FAILED);
+						throw e;
+					} finally {
+						test.setFinishTime(System.currentTimeMillis());
+						sendResult(test);
+						client.close();
+					}
+				}
+			};
 		}
-		Test test = testsMap.get(description);
-		if (test != null) {
-			test.setState(Test.State.SUCCESS);
-		}
-	}
-
-	@Override
-	protected void failed(Throwable e, Description description) {
-		if (description.isEmpty()) {
-			return;
-		}
-		Test test = testsMap.get(description);
-		if (test != null) {
-			test.setState(Test.State.FAILED);
-		}
-	}
-
-	@Override
-	protected void skipped(AssumptionViolatedException e, Description description) {
-		if (description.isEmpty()) {
-			return;
-		}
-		Test test = testsMap.get(description);
-		if (test != null) {
-			test.setState(Test.State.SKIPPED);
-		}
-	}
-
-	@Override
-	protected void finished(Description description) {
-		if (description.isEmpty()) {
-			return;
-		}
-		Test test = testsMap.get(description);
-		if (test != null) {
-			test.setFinishTime(System.currentTimeMillis());
-			sendResult(test);
-		}
-		client.close();
 	}
 
 	private void sendResult(Test test) {
